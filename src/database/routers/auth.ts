@@ -1,456 +1,811 @@
-// import { router, publicProcedure, protectedProcedure } from '../trpc.js';
-// import { z } from 'zod';
-// import { createToken } from '../../lib/jwt.js';
-// import { TRPCError } from '@trpc/server';
+// // Complete authentication procedures
+// // ==========================================
+// import { router, publicProcedure, protectedProcedure } from "../trpc.js";
+// import { z } from "zod";
+// import { TRPCError } from "@trpc/server";
+// import { createToken } from "../../lib/jwt.js";
 
 // export const authRouter = router({
-//   exchangeToken: publicProcedure
-//     .input(z.object({ sessionId: z.string() }))
-//     .mutation(async ({ input, ctx }) => {
-//       try {
-//         const token = createToken(input.sessionId);
-//         return { token };
-//       } catch (err) {
-//         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR' });
-//       }
-//     }),
+//   // ==========================================
+//   // AUTHENTICATED PROCEDURES
+//   // ==========================================
 
+//   // Get current user (protected)
 //   me: protectedProcedure.query(async ({ ctx }) => {
 //     const user = await ctx.prisma.user.findUnique({
 //       where: { id: ctx.userId },
-//       select: {
-//         id: true,
-//         email: true,
-//         firstName: true,
-//         lastName: true,
-//         profileImage: true,
-//         roles: true,
-//         tenantTier: true,
-//         verifiedBadge: true,
+//       include: {
+//         tenantProfile: true,
+//         landlordProfile: true,
+//         agentProfile: true,
+//         officerProfile: true,
 //       },
 //     });
 
 //     if (!user) {
-//       throw new TRPCError({ code: 'NOT_FOUND' });
+//       throw new TRPCError({ code: "NOT_FOUND" });
 //     }
 
 //     return user;
 //   }),
 
-//   logout: protectedProcedure.mutation(async ({ ctx }) => {
-//     return { success: true };
-//   }),
-// });
-
-
-// import { z } from 'zod';
-// import { TRPCError } from '@trpc/server';
-// import { t, publicProcedure, protectedProcedure } from '../procedures';
-// import { supabaseAdmin } from '../../auth/supabase';
-// import { syncSupabaseUser } from '../../auth/sync';
-// import { verifySupabaseJWT } from '../../auth/jwt';
-
-// const authRouter = t.router({
-//   // Get current user
-//   me: protectedProcedure.query(async ({ ctx }) => {
-//     return {
-//       id: ctx.user!.id,
-//       email: ctx.user!.email,
-//       phone: ctx.user!.phone,
-//       name: ctx.user!.name,
-//       role: ctx.user!.role,
-//       createdAt: ctx.user!.createdAt,
-//     };
-//   }),
-
-//   // Sign up with email
-//   signUp: publicProcedure
-//     .input(
-//       z.object({
-//         email: z.string().email(),
-//         password: z.string().min(8),
-//         name: z.string().optional(),
-//       })
-//     )
-//     .mutation(async ({ input, ctx }) => {
-//       try {
-//         const { data, error } = await supabaseAdmin.auth.admin.createUser({
-//           email: input.email,
-//           password: input.password,
-//           email_confirm: false,
-//           user_metadata: {
-//             name: input.name,
-//           },
-//         });
-
-//         if (error) {
-//           throw new TRPCError({
-//             code: 'BAD_REQUEST',
-//             message: error.message,
-//           });
-//         }
-
-//         // Sync user to database
-//         const jwtPayload = {
-//           sub: data.user!.id,
-//           email: data.user!.email,
-//           phone: null,
-//         };
-
-//         await syncSupabaseUser(
-//           jwtPayload as any,
-//           'email'
-//         );
-
-//         return { success: true, userId: data.user!.id };
-//       } catch (error) {
-//         throw new TRPCError({
-//           code: 'INTERNAL_SERVER_ERROR',
-//           message: 'Failed to sign up',
-//         });
-//       }
-//     }),
-
-//   // Update profile
+//   // Update user profile
 //   updateProfile: protectedProcedure
 //     .input(
 //       z.object({
-//         name: z.string().optional(),
-//         role: z.enum(['TENANT', 'LANDLORD']).optional(),
+//         firstName: z.string().optional(),
+//         lastName: z.string().optional(),
+//         middleName: z.string().optional(),
+//         profileImage: z.string().optional(),
+//         bio: z.string().optional(),
+//         dateOfBirth: z.string().datetime().optional(),
+//         gender: z.string().optional(),
+//         religion: z.string().optional(),
+//         phone: z.string().optional(),
+//       })
+//     )
+//     .mutation(async ({ input, ctx }) => {
+//       return await ctx.prisma.user.update({
+//         where: { id: ctx.userId },
+//         data: {
+//           ...input,
+//           dateOfBirth: input.dateOfBirth
+//             ? new Date(input.dateOfBirth)
+//             : undefined,
+//         },
+//       });
+//     }),
+
+//   // Update address
+//   updateAddress: protectedProcedure
+//     .input(
+//       z.object({
+//         address: z.string(),
+//         addressNumber: z.string(),
+//         city: z.string(),
+//         state: z.string(),
+//         country: z.string(),
+//         latitude: z.number().optional(),
+//         longitude: z.number().optional(),
+//       })
+//     )
+//     .mutation(async ({ input, ctx }) => {
+//       return await ctx.prisma.user.update({
+//         where: { id: ctx.userId },
+//         data: input,
+//       });
+//     }),
+
+//   // Request KYC verification (submit documents)
+//   requestKYC: protectedProcedure
+//     .input(
+//       z.object({
+//         documentUrl: z.string(), // S3 URL
+//         documentType: z.enum(["NATIONAL_ID", "PASSPORT", "DRIVERS_LICENSE"]),
+//       })
+//     )
+//     .mutation(async ({ input, ctx }) => {
+//       // Create verification request
+//       const request = await ctx.prisma.verificationRequest.create({
+//         data: {
+//           userId: ctx.userId,
+//           type: "KYC",
+//           documents: [input.documentUrl],
+//           status: "PENDING",
+//         },
+//       });
+
+//       // Update user status
+//       await ctx.prisma.user.update({
+//         where: { id: ctx.userId },
+//         data: { kycStatus: "PENDING" },
+//       });
+
+//       return request;
+//     }),
+
+//   // Request BVN verification (Pro tier)
+//   requestBVN: protectedProcedure
+//     .input(z.object({ bvnNumber: z.string() }))
+//     .mutation(async ({ input, ctx }) => {
+//       // Check subscription tier
+//       const user = await ctx.prisma.user.findUnique({
+//         where: { id: ctx.userId },
+//       });
+
+//       if (user?.tenantTier !== "PRO" && user?.tenantTier !== "PREMIUM") {
+//         throw new TRPCError({
+//           code: "FORBIDDEN",
+//           message: "BVN verification requires PRO tier",
+//         });
+//       }
+
+//       // Create verification request
+//       const request = await ctx.prisma.verificationRequest.create({
+//         data: {
+//           userId: ctx.userId,
+//           type: "BVN",
+//           status: "PENDING",
+//         },
+//       });
+
+//       return request;
+//     }),
+
+//   // Logout (optional - mainly for cleanup)
+//   logout: protectedProcedure.mutation(async ({ ctx }) => {
+//     // Could invalidate tokens in Redis here if needed
+//     return { success: true };
+//   }),
+
+//   // ==========================================
+//   // SIGN UP PROCEDURES (PUBLIC)
+//   // ==========================================
+
+//   // Step 1: Create incomplete user record (before auth verification)
+//   createIncompleteUser: publicProcedure
+//     .input(
+//       z.object({
+//         supabaseId: z.string(),
+//         email: z.string().email().optional(),
+//         phone: z.string().optional(),
+//         authMethod: z.enum(["EMAIL", "PHONE", "GOOGLE"]),
 //       })
 //     )
 //     .mutation(async ({ input, ctx }) => {
 //       try {
-//         const updated = await ctx.prisma.user.update({
-//           where: { id: ctx.user!.id },
+//         // Check if already exists
+//         const existing = await ctx.prisma.incompleteUser.findUnique({
+//           where: { supabaseId: input.supabaseId },
+//         });
+
+//         if (existing) {
+//           return existing;
+//         }
+
+//         // Create incomplete user
+//         const incompleteUser = await ctx.prisma.incompleteUser.create({
 //           data: {
-//             name: input.name,
-//             role: input.role,
+//             supabaseId: input.supabaseId,
+//             email: input.email,
+//             phone: input.phone,
+//             authMethod: input.authMethod,
+//             stage: "ROLE_SELECTION",
 //           },
 //         });
 
-//         return updated;
+//         return incompleteUser;
 //       } catch (error) {
+//         console.error("Error creating incomplete user:", error);
 //         throw new TRPCError({
-//           code: 'INTERNAL_SERVER_ERROR',
-//           message: 'Failed to update profile',
+//           code: "INTERNAL_SERVER_ERROR",
+//           message: "Failed to create user record",
 //         });
 //       }
 //     }),
 
-//   // Request phone OTP
-//   requestPhoneOTP: publicProcedure
+//   // Step 2: Update incomplete user with role selection
+//   selectRole: publicProcedure
 //     .input(
 //       z.object({
-//         phone: z.string(),
-//         otp: z.string(),
+//         supabaseId: z.string(),
+//         roles: z.array(z.string()),
+//       })
+//     )
+//     .mutation(async ({ input, ctx }) => {
+//       const incomplete = await ctx.prisma.incompleteUser.findUnique({
+//         where: { supabaseId: input.supabaseId },
+//       });
+
+//       if (!incomplete) {
+//         throw new TRPCError({ code: "NOT_FOUND" });
+//       }
+
+//       return await ctx.prisma.incompleteUser.update({
+//         where: { supabaseId: input.supabaseId },
+//         data: {
+//           roles: input.roles,
+//           stage: "BASIC_INFO",
+//           lastStageAt: new Date(),
+//         },
+//       });
+//     }),
+
+//   // Step 3: Update with basic info and complete onboarding
+//   completeOnboarding: publicProcedure
+//     .input(
+//       z.object({
+//         supabaseId: z.string(),
+//         email: z.string().email(),
+//         firstName: z.string(),
+//         lastName: z.string(),
+//         profileImage: z.string().optional(),
+//         roles: z.array(z.string()),
 //       })
 //     )
 //     .mutation(async ({ input, ctx }) => {
 //       try {
-//         // In production, verify OTP against Supabase or Twilio
-//         // For now, this is a placeholder
-//         const { data, error } = await supabaseAdmin.auth.admin.createUser({
-//           phone: input.phone,
-//           email_confirm: false,
+//         // Get incomplete user
+//         const incomplete = await ctx.prisma.incompleteUser.findUnique({
+//           where: { supabaseId: input.supabaseId },
 //         });
 
-//         if (error) {
+//         if (!incomplete) {
 //           throw new TRPCError({
-//             code: 'BAD_REQUEST',
-//             message: 'Invalid OTP',
+//             code: "NOT_FOUND",
+//             message: "User registration not found",
 //           });
 //         }
 
-//         // Sync user
-//         await syncSupabaseUser(
-//           {
-//             sub: data.user!.id,
-//             phone: input.phone,
-//           } as any,
-//           'phone'
-//         );
+//         // Create complete user from incomplete
+//         const newUser = await ctx.prisma.user.create({
+//           data: {
+//             supabaseId: input.supabaseId,
+//             email: input.email,
+//             firstName: input.firstName,
+//             lastName: input.lastName,
+//             profileImage: input.profileImage,
+//             roles: input.roles,
+//             preferredAuthMethod: incomplete.authMethod,
+//             onboardingCompleted: true,
+//             onboardingCompletedAt: new Date(),
+//           },
+//         });
 
-//         return { success: true, userId: data.user!.id };
+//         // Create role-specific profiles
+//         if (input.roles.includes("TENANT")) {
+//           await ctx.prisma.tenantProfile.create({
+//             data: { userId: newUser.id },
+//           });
+//         }
+
+//         if (input.roles.includes("LANDLORD") || input.roles.includes("AGENT")) {
+//           await ctx.prisma.landlordProfile.create({
+//             data: { userId: newUser.id },
+//           });
+//         }
+
+//         if (input.roles.includes("LANDLORD_AGENT")) {
+//           await ctx.prisma.agentProfile.create({
+//             data: { userId: newUser.id },
+//           });
+//         }
+
+//         if (input.roles.some((r) => r.includes("OFFICER"))) {
+//           await ctx.prisma.officeProfile.create({
+//             data: {
+//               userId: newUser.id,
+//               level: input.roles[0], // First role is primary
+//             },
+//           });
+//         }
+
+//         // Delete incomplete user
+//         await ctx.prisma.incompleteUser.delete({
+//           where: { supabaseId: input.supabaseId },
+//         });
+
+//         // Generate JWT token
+//         const token = createToken(newUser.id);
+
+//         return {
+//           user: newUser,
+//           token,
+//         };
 //       } catch (error) {
+//         console.error("Error completing onboarding:", error);
 //         throw new TRPCError({
-//           code: 'INTERNAL_SERVER_ERROR',
-//           message: 'OTP verification failed',
+//           code: "INTERNAL_SERVER_ERROR",
+//           message: "Failed to complete registration",
 //         });
 //       }
 //     }),
 
-//   // Google OAuth callback handler
-//   googleLoginCallback: publicProcedure
-//     .input(
-//       z.object({
-//         idToken: z.string(), // ID token from Google
-//       })
-//     )
-//     .mutation(async ({ input }) => {
-//       try {
-//         // Exchange Google token for Supabase session
-//         const { data, error } = await supabaseAdmin.auth.admin.getUser(
-//           input.idToken
-//         );
+//   // ==========================================
+//   // LOGIN PROCEDURES (PUBLIC)
+//   // ==========================================
 
-//         if (error) {
-//           throw new TRPCError({
-//             code: 'BAD_REQUEST',
-//             message: 'Invalid Google token',
-//           });
-//         }
+//   // Check onboarding status
+//   checkOnboardingStatus: publicProcedure
+//     .input(z.object({ supabaseId: z.string() }))
+//     .query(async ({ input, ctx }) => {
+//       // Check if user exists in main table
+//       const completeUser = await ctx.prisma.user.findUnique({
+//         where: { supabaseId: input.supabaseId },
+//         select: {
+//           id: true,
+//           onboardingCompleted: true,
+//           roles: true,
+//         },
+//       });
 
-//         // Sync user
-//         await syncSupabaseUser(
-//           {
-//             sub: data.user!.id,
-//             email: data.user!.email,
-//           } as any,
-//           'google'
-//         );
-
-//         return { success: true, userId: data.user!.id };
-//       } catch (error) {
-//         throw new TRPCError({
-//           code: 'INTERNAL_SERVER_ERROR',
-//           message: 'Google login failed',
-//         });
+//       if (completeUser) {
+//         return {
+//           status: "COMPLETE",
+//           userId: completeUser.id,
+//           roles: completeUser.roles,
+//         };
 //       }
+
+//       // Check incomplete user
+//       const incompleteUser = await ctx.prisma.incompleteUser.findUnique({
+//         where: { supabaseId: input.supabaseId },
+//         select: {
+//           stage: true,
+//           roles: true,
+//         },
+//       });
+
+//       if (incompleteUser) {
+//         return {
+//           status: "IN_PROGRESS",
+//           stage: incompleteUser.stage,
+//           roles: incompleteUser.roles,
+//         };
+//       }
+
+//       return {
+//         status: "NOT_STARTED",
+//       };
 //     }),
 
-//   // Sign out (client-side primarily)
-//   signOut: protectedProcedure.mutation(async ({ ctx }) => {
-//     // Update lastLoginAt to track activity
-//     await ctx.prisma.user.update({
-//       where: { id: ctx.user!.id },
-//       data: { lastLoginAt: new Date() },
-//     });
+//   // Get user by Supabase ID (after login verification)
+//   // This is called after user authenticates with Supabase
+//   getUserBySupabaseId: publicProcedure
+//     .input(z.object({ supabaseId: z.string() }))
+//     .query(async ({ input, ctx }) => {
+//       const user = await ctx.prisma.user.findUnique({
+//         where: { supabaseId: input.supabaseId },
+//         include: {
+//           tenantProfile: true,
+//           landlordProfile: true,
+//           agentProfile: true,
+//           officerProfile: true,
+//         },
+//       });
 
-//     return { success: true };
-//   }),
+//       if (!user) {
+//         // User exists in Supabase but not in our DB
+//         // This shouldn't happen if onboarding worked, but handle gracefully
+//         return null;
+//       }
+
+//       if (user.isBlocked) {
+//         throw new TRPCError({
+//           code: "FORBIDDEN",
+//           message: `Account blocked. Reason: ${
+//             user.blockReason || "Security reasons"
+//           }`,
+//         });
+//       }
+
+//       // Update last login
+//       await ctx.prisma.user.update({
+//         where: { id: user.id },
+//         data: { lastLoginAt: new Date() },
+//       });
+
+//       // Generate JWT
+//       const token = createToken(user.id);
+
+//       return {
+//         user,
+//         token,
+//       };
+//     }),
 // });
 
-// export default authRouter;
+import { router, publicProcedure, protectedProcedure } from "../trpc";
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { createToken } from "../../lib/jwt";
+import { logger } from "../../lib/logger";
 
+export const authRouter = router({
+  // ==========================================
+  // AUTHENTICATED PROCEDURES
+  // ==========================================
 
-
-
-
-import { z } from 'zod';
-import { TRPCError } from '@trpc/server';
-import { t, publicProcedure, protectedProcedure } from '../procedures';
-import { supabaseAdmin } from '../../auth/supabase';
-import { syncSupabaseUser } from '../../auth/sync';
-
-export const authRouter = t.router({
-  // Get current user
   me: protectedProcedure.query(async ({ ctx }) => {
-    return {
-      id: ctx.user!.id,
-      email: ctx.user!.email,
-      phone: ctx.user!.phone,
-      name: ctx.user!.name,
-      role: ctx.user!.role,
-      createdAt: ctx.user!.createdAt,
-    };
+    logger.debug("📋 Fetching current user", { userId: ctx.userId });
+
+    const user = await ctx.prisma.user.findUnique({
+      where: { id: ctx.userId },
+      include: {
+        tenantProfile: true,
+        landlordProfile: true,
+        agentProfile: true,
+        officerProfile: true,
+      },
+    });
+
+    if (!user) {
+      logger.warn("⚠️  User not found", { userId: ctx.userId });
+      throw new TRPCError({ code: "NOT_FOUND" });
+    }
+
+    logger.success("✅ User fetched successfully");
+    return user;
   }),
 
-  // Sign up with email
-  signUp: publicProcedure
-    .input(
-      z.object({
-        email: z.string().email(),
-        password: z.string().min(8),
-        name: z.string().optional(),
-      })
-    )
-    .mutation(async ({ input }) => {
-      try {
-        const { data, error } = await supabaseAdmin.auth.admin.createUser({
-          email: input.email,
-          password: input.password,
-          email_confirm: false,
-          user_metadata: {
-            name: input.name,
-          },
-        });
-
-        if (error) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: error.message,
-          });
-        }
-
-        // Sync user to database
-        const jwtPayload = {
-          sub: data.user!.id,
-          email: data.user!.email,
-          phone: null,
-        };
-
-        await syncSupabaseUser(jwtPayload as any, 'email');
-
-        return { success: true, userId: data.user!.id };
-      } catch (error) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Failed to sign up',
-        });
-      }
-    }),
-
-  // Update profile
   updateProfile: protectedProcedure
     .input(
       z.object({
-        name: z.string().optional(),
-        role: z.enum(['TENANT', 'LANDLORD']).optional(),
+        firstName: z.string().optional(),
+        lastName: z.string().optional(),
+        middleName: z.string().optional(),
+        profileImage: z.string().optional(),
+        bio: z.string().optional(),
+        dateOfBirth: z.string().datetime().optional(),
+        gender: z.string().optional(),
+        religion: z.string().optional(),
+        phone: z.string().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
+      logger.info("📝 Updating user profile", { userId: ctx.userId });
+
+      const updated = await ctx.prisma.user.update({
+        where: { id: ctx.userId },
+        data: {
+          ...input,
+          dateOfBirth: input.dateOfBirth
+            ? new Date(input.dateOfBirth)
+            : undefined,
+        },
+      });
+
+      logger.success("✅ Profile updated");
+      return updated;
+    }),
+
+  updateAddress: protectedProcedure
+    .input(
+      z.object({
+        address: z.string(),
+        addressNumber: z.string(),
+        city: z.string(),
+        state: z.string(),
+        country: z.string(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      logger.info("📍 Updating user address", { userId: ctx.userId });
+
+      const updated = await ctx.prisma.user.update({
+        where: { id: ctx.userId },
+        data: input,
+      });
+
+      logger.success("✅ Address updated");
+      return updated;
+    }),
+
+  requestKYC: protectedProcedure
+    .input(
+      z.object({
+        documentUrl: z.string(),
+        documentType: z.enum(["NATIONAL_ID", "PASSPORT", "DRIVERS_LICENSE"]),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      logger.info("🆔 KYC verification requested", { userId: ctx.userId });
+
+      const request = await ctx.prisma.verificationRequest.create({
+        data: {
+          userId: ctx.userId,
+          type: "KYC",
+          documents: [input.documentUrl],
+          status: "PENDING",
+        },
+      });
+
+      await ctx.prisma.user.update({
+        where: { id: ctx.userId },
+        data: { kycStatus: "PENDING" },
+      });
+
+      logger.success("✅ KYC request created");
+      return request;
+    }),
+
+  // ==========================================
+  // SIGN UP PROCEDURES
+  // ==========================================
+
+  createIncompleteUser: publicProcedure
+    .input(
+      z.object({
+        supabaseId: z.string(),
+        email: z.string().email().optional(),
+        phone: z.string().optional(),
+        authMethod: z.enum(["EMAIL", "PHONE", "GOOGLE"]),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      logger.info("👤 Creating incomplete user", {
+        supabaseId: input.supabaseId,
+        authMethod: input.authMethod,
+      });
+
       try {
-        const updated = await ctx.prisma.user.update({
-          where: { id: ctx.user!.id },
+        const existing = await ctx.prisma.incompleteUser.findUnique({
+          where: { supabaseId: input.supabaseId },
+        });
+
+        if (existing) {
+          logger.info("ℹ️  Incomplete user already exists");
+          return existing;
+        }
+
+        const incompleteUser = await ctx.prisma.incompleteUser.create({
           data: {
-            name: input.name,
-            role: input.role,
+            supabaseUserId: input.supabaseId,
+            email: input.email,
+            phone: input.phone,
+            authMethod: input.authMethod,
+            stage: "AUTH_COMPLETED",
           },
         });
 
-        return updated;
+        logger.success("✅ Incomplete user created", {
+          incompleteUserId: incompleteUser.id,
+        });
+        return incompleteUser;
       } catch (error) {
+        logger.error("❌ Failed to create incomplete user", error);
         throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Failed to update profile',
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to create user record",
         });
       }
     }),
 
-  // Request phone OTP
-  requestPhoneOTP: publicProcedure
-    .input(z.object({ phone: z.string() }))
-    .mutation(async ({ input }) => {
-      try {
-        // Create user with phone, Supabase will send OTP automatically
-        const { error } = await supabaseAdmin.auth.admin.createUser({
-          phone: input.phone,
-          phone_confirm: false, // Require phone verification
-        });
-
-        if (error) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Failed to send OTP',
-          });
-        }
-
-        return { success: true };
-      } catch (error) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'OTP request failed',
-        });
-      }
-    }),
-
-  // Verify phone OTP
-  verifyPhoneOTP: publicProcedure
+  selectRole: publicProcedure
     .input(
       z.object({
-        phone: z.string(),
-        otp: z.string(),
+        supabaseId: z.string(),
+        roles: z.array(z.string()),
       })
     )
-    .mutation(async ({ input }) => {
-      try {
-        // Verify OTP by creating/updating user with phone
-        const { data, error } = await supabaseAdmin.auth.admin.createUser({
-          phone: input.phone,
-          phone_confirm: true, // Mark phone as confirmed
-        });
+    .mutation(async ({ input, ctx }) => {
+      logger.info("🎭 Selecting roles", {
+        supabaseId: input.supabaseId,
+        roles: input.roles,
+      });
 
-        if (error) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Invalid OTP or phone verification failed',
-          });
-        }
+      const incomplete = await ctx.prisma.incompleteUser.findUnique({
+        where: { supabaseUserId: input.supabaseId },
+      });
 
-        // Sync user to database
-        await syncSupabaseUser(
-          {
-            sub: data.user!.id,
-            phone: input.phone,
-          } as any,
-          'phone'
-        );
-
-        return { success: true, userId: data.user!.id };
-      } catch (error) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'OTP verification failed',
-        });
+      if (!incomplete) {
+        logger.warn("⚠️  Incomplete user not found");
+        throw new TRPCError({ code: "NOT_FOUND" });
       }
+
+      const updated = await ctx.prisma.incompleteUser.update({
+        where: { supabaseUserId: input.supabaseId },
+        data: {
+          roles: input.roles,
+          stage: "BASIC_INFO",
+          lastStageAt: new Date(),
+        },
+      });
+
+      logger.success("✅ Roles selected");
+      return updated;
     }),
 
-  // Google OAuth callback handler
-  googleLoginCallback: publicProcedure
+  completeOnboarding: publicProcedure
     .input(
       z.object({
-        idToken: z.string(),
+        supabaseId: z.string(),
+        email: z.string().email(),
+        firstName: z.string(),
+        lastName: z.string(),
+        profileImage: z.string().optional(),
+        roles: z.array(z.string()),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      logger.info("🎯 Completing onboarding", {
+        supabaseId: input.supabaseId,
+        email: input.email,
+      });
+
       try {
-        // Verify Google token with Supabase
-        const { data, error } = await supabaseAdmin.auth.signInWithIdToken({
-          provider: 'google',
-          token: input.idToken,
+        const incomplete = await ctx.prisma.incompleteUser.findUnique({
+          where: { supabaseUserId: input.supabaseId },
         });
 
-        if (error) {
+        if (!incomplete) {
+          logger.warn("⚠️  Incomplete user not found");
           throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Invalid Google token',
+            code: "NOT_FOUND",
+            message: "User registration not found",
           });
         }
 
-        // Sync user
-        await syncSupabaseUser(
-          {
-            sub: data.user!.id,
-            email: data.user!.email,
-          } as any,
-          'google'
-        );
+        // Create complete user
+        const newUser = await ctx.prisma.user.create({
+          data: {
+            supabaseUserId: input.supabaseId,
+            email: input.email,
+            firstName: input.firstName,
+            lastName: input.lastName,
+            profileImage: input.profileImage,
+            roles: input.roles as any,
+            provider: incomplete.authMethod as any,
+            onboardingCompleted: true,
+            onboardingCompletedAt: new Date(),
+          },
+        });
 
-        return { success: true, userId: data.user!.id };
+        logger.success("✅ User created in database", { userId: newUser.id });
+
+        // Create role-specific profiles
+        if (input.roles.includes("TENANT")) {
+          await ctx.prisma.tenantProfile.create({
+            data: { userId: newUser.id },
+          });
+          logger.debug("✅ Tenant profile created");
+        }
+
+        if (
+          input.roles.includes("LANDLORD") ||
+          input.roles.includes("LANDLORD_AGENT")
+        ) {
+          await ctx.prisma.landlordProfile.create({
+            data: { userId: newUser.id },
+          });
+          logger.debug("✅ Landlord profile created");
+        }
+
+        if (input.roles.includes("LANDLORD_AGENT")) {
+          await ctx.prisma.agentProfile.create({
+            data: { userId: newUser.id },
+          });
+          logger.debug("✅ Agent profile created");
+        }
+
+        if (input.roles.some((r) => r.includes("OFFICER"))) {
+          await ctx.prisma.officerProfile.create({
+            data: {
+              userId: newUser.id,
+              level: input.roles[0] as any,
+            },
+          });
+          logger.debug("✅ Officer profile created");
+        }
+
+        // Delete incomplete user
+        await ctx.prisma.incompleteUser.delete({
+          where: { supabaseUserId: input.supabaseId },
+        });
+
+        logger.info("🗑️  Incomplete user deleted");
+
+        // Generate JWT
+        const token = createToken(newUser.id);
+
+        logger.success("✅ Onboarding completed successfully");
+
+        return {
+          user: newUser,
+          token,
+        };
       } catch (error) {
+        logger.error("❌ Onboarding completion failed", error);
         throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Google login failed',
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to complete registration",
         });
       }
     }),
 
-  // Sign out
-  signOut: protectedProcedure.mutation(async ({ ctx }) => {
-    try {
-      // Update lastLoginAt to track activity
+  // ==========================================
+  // LOGIN PROCEDURES
+  // ==========================================
+
+  checkOnboardingStatus: publicProcedure
+    .input(z.object({ supabaseId: z.string() }))
+    .query(async ({ input, ctx }) => {
+      logger.debug("🔍 Checking onboarding status", {
+        supabaseId: input.supabaseId,
+      });
+
+      const completeUser = await ctx.prisma.user.findUnique({
+        where: { supabaseUserId: input.supabaseId },
+        select: {
+          id: true,
+          onboardingCompleted: true,
+          roles: true,
+        },
+      });
+
+      if (completeUser) {
+        logger.success("✅ User found - onboarding complete");
+        return {
+          status: "COMPLETE" as const,
+          userId: completeUser.id,
+          roles: completeUser.roles,
+        };
+      }
+
+      const incompleteUser = await ctx.prisma.incompleteUser.findUnique({
+        where: { supabaseUserId: input.supabaseId },
+        select: {
+          stage: true,
+          roles: true,
+        },
+      });
+
+      if (incompleteUser) {
+        logger.info("🟡 User found - onboarding in progress", {
+          stage: incompleteUser.stage,
+        });
+        return {
+          status: "IN_PROGRESS" as const,
+          stage: incompleteUser.stage,
+          roles: incompleteUser.roles,
+        };
+      }
+
+      logger.info("🆕 New user - onboarding not started");
+      return {
+        status: "NOT_STARTED" as const,
+      };
+    }),
+
+  getUserBySupabaseId: publicProcedure
+    .input(z.object({ supabaseId: z.string() }))
+    .query(async ({ input, ctx }) => {
+      logger.debug("🔍 Fetching user by Supabase ID", {
+        supabaseId: input.supabaseId,
+      });
+
+      const user = await ctx.prisma.user.findUnique({
+        where: { supabaseUserId: input.supabaseId },
+        include: {
+          tenantProfile: true,
+          landlordProfile: true,
+          agentProfile: true,
+          officerProfile: true,
+        },
+      });
+
+      if (!user) {
+        logger.warn("⚠️  User not found in database");
+        return null;
+      }
+
+      if (user.isBlocked) {
+        logger.warn("❌ User account is blocked", { userId: user.id });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `Account blocked. Reason: ${
+            user.blockReason || "Security reasons"
+          }`,
+        });
+      }
+
+      // Update last login
       await ctx.prisma.user.update({
-        where: { id: ctx.user!.id },
+        where: { id: user.id },
         data: { lastLoginAt: new Date() },
       });
 
-      return { success: true };
-    } catch (error) {
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to sign out',
-      });
-    }
-  }),
+      logger.debug("✅ Last login updated");
+
+      const token = createToken(user.id);
+
+      logger.success("✅ User logged in successfully");
+
+      return {
+        user,
+        token,
+      };
+    }),
 });

@@ -43,18 +43,21 @@ enum PropertyStatus {
 enum SwipeDirection {
   LEFT
   RIGHT
+  DOWN // Favorite swipe (Pro feature)
 }
 
 enum VerificationStatus {
   PENDING
   APPROVED
   REJECTED
+  EXPIRED
 }
 
 enum FraudAlertType {
   PAYMENT_DECLINE
   LOCATION_JUMP
   IP_MISMATCH
+  DUPLICATE_ACCOUNT
   MANUAL_FLAG
   OTHER
 }
@@ -92,152 +95,434 @@ enum NotificationType {
   PAYMENT_RECEIVED
   VERIFICATION_UPDATE
   FRAUD_ALERT
+  TIER_UPGRADE
   OTHER
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+  BLOCKED
+}
+
+enum AuthMethod {
+  EMAIL
+  PHONE
+  GOOGLE
+}
+
+enum OnboardingStage {
+  AUTH_COMPLETED
+  ROLE_SELECTION
+  BASIC_INFO
+  VERIFICATION
+  COMPLETE
+}
+
+enum VerificationType {
+  KYC
+  BVN
+  NIN
+  INCOME
+  BUSINESS_LICENSE
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
 }
 
 // ==========================================
 // USER
 // ==========================================
 model User {
-  id               String    @id @default(cuid())
-  supabaseUserId          String?   @unique
-  email            String    @unique
-  phone            String?   @unique
+  id               String        @id @default(cuid())
+  supabaseUserId   String        @unique
+  email            String        @unique
+  phone            String?       @unique
 
+  // Basic Info
   firstName        String
   lastName         String
-  provider         String    // 'email', 'phone', 'google', 'github'
-
+  middleName       String?
+  profileImage     String?       // S3/Supabase Storage URL
+  dateOfBirth      DateTime?
+  gender           Gender?
+  religion         String?       // Optional
   bio              String?
-  profileImage     String?
+
+  // Authentication
+  provider         AuthMethod    // Primary auth method used
+  lastLoginAt      DateTime?
 
   // Roles & Permissions
-  roles            UserRole[] @default([])
+  roles            UserRole[]    @default([])
   
   // Tiering
-  tenantTier       TierLevel @default(UNVERIFIED)
-  landlordTier     TierLevel @default(UNVERIFIED)
+  tenantTier       TierLevel     @default(UNVERIFIED)
+  landlordTier     TierLevel     @default(UNVERIFIED)
 
-  // KYC
-  kycStatus        KYCStatus @default(PENDING)
-  kycDocument      String?
+  // KYC & Verification
+  kycStatus        KYCStatus     @default(PENDING)
+  kycDocument      String?       // S3 URL to ID document
   kycVerifiedAt    DateTime?
 
-  // Fraud & Security
-  fraudScore       Float     @default(0.0)
-  fraudFlags       String[]  @default([])
-  isBlocked        Boolean   @default(false)
+  // Identity Verification (Nigeria-specific)
+  nin              String?       @unique // National ID Number
+  ninVerified      Boolean       @default(false)
+  bvn              String?       @unique // Bank Verification Number (Pro tier)
+  bvnVerified      Boolean       @default(false)
 
-  // Billing
-  stripeCustomerId String?   @unique
+  // Address
+  address          String?
+  addressNumber    String?
+  city             String?
+  state            String?
+  country          String?       @default("Nigeria")
+  latitude         Float?
+  longitude        Float?
+
+  // Fraud & Security
+  fraudScore       Float         @default(0.0)
+  fraudFlags       String[]      @default([])
+  isBlocked        Boolean       @default(false)
+  blockReason      String?
+  blockedAt        DateTime?
+
+  // Account Status
+  accountStatus    AccountStatus @default(ACTIVE)
+  onboardingCompleted Boolean    @default(false)
+  onboardingCompletedAt DateTime?
+
+  // Billing & Subscription
+  stripeCustomerId String?       @unique
   subscriptionId   String?
+  subscriptionTier String?       // Maps to TierLevel
   subscriptionExpiry DateTime?
 
-  // Profile
-  verifiedBadge    Boolean   @default(false)
-  privacyLevel     PrivacyLevel @default(MEDIUM)
-  dataConsent      Boolean   @default(false)
+  // Profile Settings
+  verifiedBadge    Boolean       @default(false)
+  privacyLevel     PrivacyLevel  @default(MEDIUM)
+  dataConsent      Boolean       @default(false)
 
-  // Activity
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  lastLoginAt      DateTime?
-  lastLocation     Json?
+  // Device & Push Notifications
+  deviceTokens     String[]      @default([])
 
-  // Preferences
-  tenantPreferences    Json?
-  landlordPreferences  Json?
+  // Activity Tracking
+  lastLocation     Json?         // { lat, lng, timestamp }
+  
+  // Timestamps
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  // Preferences (stored as JSON for flexibility)
+  tenantPreferences    Json?     // Filters, search preferences
+  landlordPreferences  Json?     // Notification settings, etc.
 
   // Relations
+  tenantProfile        TenantProfile?
+  landlordProfile      LandlordProfile?
+  agentProfile         AgentProfile?
+  officerProfile       OfficerProfile?
+
   properties           Property[]
   swipes               Swipe[]
+  favorites            Favorite[]        @relation("UserFavorites")
   sentMessages         Message[]         @relation("MessageSender")
   receivedMessages     Message[]         @relation("MessageRecipient")
   notifications        Notification[]
   
-  // Fixed: Use unique relation names
   matchesAsTenant      Match[]           @relation("MatchTenant")
   matchesAsLandlord    Match[]           @relation("MatchLandlord")
   
   verificationRequests VerificationRequest[]
   fraudAlerts          FraudAlert[]
   transactions         Transaction[]
+  subscriptions        Subscription[]
   adminLogs            AdminLog[]
+  disputeReports       DisputeReport[]   @relation("ReportedBy")
+  disputesAgainst      DisputeReport[]   @relation("ReportedAgainst")
 
   @@index([email])
   @@index([phone])
+  @@index([supabaseUserId])
   @@index([roles])
   @@index([tenantTier])
   @@index([landlordTier])
   @@index([kycStatus])
   @@index([isBlocked])
   @@index([fraudScore])
+  @@index([accountStatus])
+  @@index([onboardingCompleted])
+}
+
+// ==========================================
+// INCOMPLETE USER (Onboarding Recovery)
+// ==========================================
+model IncompleteUser {
+  id                String           @id @default(cuid())
+  supabaseUserId    String           @unique
+  email             String?
+  phone             String?
+  
+  // Authentication
+  authMethod        AuthMethod
+  authCompleted     Boolean          @default(true)
+  
+  // Partial data collected
+  firstName         String?
+  lastName          String?
+  profileImage      String?
+  roles             UserRole[]       @default([])
+  
+  // Track onboarding progress
+  stage             OnboardingStage  @default(ROLE_SELECTION)
+  lastStageAt       DateTime         @default(now())
+  
+  // Store temporary data
+  onboardingData    Json?            // Any additional data collected
+  
+  // Metadata
+  deviceInfo        Json?            // Device, OS, app version
+  
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  expiresAt         DateTime         @default(dbgenerated("now() + interval '30 days'"))
+  
+  @@index([supabaseUserId])
+  @@index([email])
+  @@index([phone])
+  @@index([stage])
+  @@index([expiresAt])
+}
+
+// ==========================================
+// USER PROFILES (Role-Specific)
+// ==========================================
+model TenantProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Search Preferences
+  preferredBeds     Int?
+  preferredBaths    Int?
+  minPrice          Int?     // In cents
+  maxPrice          Int?     // In cents
+  preferredCities   String[] @default([])
+  preferredAmenities String[] @default([])
+  
+  // Personal/Professional Info
+  workField         String?
+  company           String?
+  income            Int?     // Annual income in cents
+  incomeVerified    Boolean  @default(false)
+  
+  // Lifestyle Preferences
+  smokingStatus     String?  // YES, NO, OCCASIONALLY
+  petPreference     String?  // DOGS, CATS, NONE, OPEN
+  visitingPattern   String?  // FREQUENT, OCCASIONAL, RARELY
+  
+  // Behavioral Stats
+  totalSwipes       Int      @default(0)
+  totalMatches      Int      @default(0)
+  totalMessages     Int      @default(0)
+  responseRate      Float    @default(0)
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+}
+
+model LandlordProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Business Information
+  businessName      String?
+  businessRegNumber String?
+  taxId             String?
+  
+  // Performance Stats
+  totalListings     Int      @default(0)
+  totalMatches      Int      @default(0)
+  responseRate      Float    @default(0)
+  averageRating     Float    @default(0)
+  
+  // Verification
+  licenseDocument   String?  // S3 URL
+  licenseVerified   Boolean  @default(false)
+  licenseExpiry     DateTime?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+}
+
+model AgentProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Agency Details
+  brokerage         String?
+  brokerageId       String?
+  agentLicense      String?
+  
+  // Stats
+  totalListings     Int      @default(0)
+  totalMatches      Int      @default(0)
+  responseRate      Float    @default(0)
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+}
+
+model OfficerProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Officer Level
+  level             UserRole @default(OFFICER_USER)
+  
+  // Granular Permissions
+  canVerifyKYC      Boolean  @default(false)
+  canBlockUsers     Boolean  @default(false)
+  canResolveDisputes Boolean @default(false)
+  canViewAnalytics  Boolean  @default(false)
+  canManageOfficers Boolean  @default(false) // SuperAdmin only
+  
+  // Performance Stats
+  verificationsHandled Int   @default(0)
+  disputesResolved  Int      @default(0)
+  
+  // Activity
+  lastActivityAt    DateTime?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([level])
 }
 
 // ==========================================
 // PROPERTY
 // ==========================================
 model Property {
-  id                  String   @id @default(cuid())
+  id                  String         @id @default(cuid())
   landlordId          String
-  landlord            User     @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  landlord            User           @relation(fields: [landlordId], references: [id], onDelete: Cascade)
 
+  // Basic Info
   title               String
   description         String?
   address             String
+  addressNumber       String?
+  city                String
+  state               String?
+  country             String         @default("Nigeria")
   latitude            Float?
   longitude           Float?
 
-  images              String[]  @default([])
-  videos              String[]  @default([])
+  // Media
+  images              String[]       @default([])
+  videos              String[]       @default([])
   threeDModel         String?
 
-  priceMonthly        Int       // cents
+  // Property Details
+  priceMonthly        Int            // In cents
   beds                Int
   baths               Int
   sqft                Int?
+  yearBuilt           Int?
 
-  preferredTenantTier TierLevel @default(UNVERIFIED)
-  amenities           String[]  @default([])
-  petFriendly         Boolean   @default(false)
+  // Features & Amenities
+  amenities           String[]       @default([])
+  petFriendly         Boolean        @default(false)
+  furnished           Boolean        @default(false)
+  airConditioned      Boolean        @default(false)
+  
+  // Lease Terms
+  minLeaseTerm        Int            @default(12) // months
   availabilityDate    DateTime?
   leaseLengthMonths   Int?
-  utilitiesIncluded   String[]  @default([])
+  utilitiesIncluded   String[]       @default([])
 
+  // Tenant Requirements
+  preferredTenantTier TierLevel      @default(UNVERIFIED)
+  smokingAllowed      Boolean        @default(false)
+  visitorPolicy       String?        // STRICT, MODERATE, OPEN
+
+  // Engagement Metrics
+  views               Int            @default(0)
+  favoriteCount       Int            @default(0)
+  matchCount          Int            @default(0)
+
+  // Status
   status              PropertyStatus @default(ACTIVE)
+  publishedAt         DateTime       @default(now())
 
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
+  // Relations
   swipes              Swipe[]
   matches             Match[]
+  favorites           Favorite[]
 
   @@index([landlordId])
   @@index([status])
+  @@index([city])
   @@index([priceMonthly])
+  @@index([beds])
   @@index([latitude, longitude])
   @@index([preferredTenantTier])
+  @@index([publishedAt])
 }
 
 // ==========================================
 // INTERACTIONS
 // ==========================================
 model Swipe {
-  id          String        @id @default(cuid())
+  id          String         @id @default(cuid())
   tenantId    String
-  tenant      User          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      User           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   propertyId  String
-  property    Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  property    Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   direction   SwipeDirection
-  timestamp   DateTime      @default(now())
+  timestamp   DateTime       @default(now())
 
   @@unique([tenantId, propertyId])
   @@index([tenantId])
   @@index([propertyId])
   @@index([direction])
+  @@index([timestamp])
 }
 
-// Critical fix: Use explicit, unique relation names
+model Favorite {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      User     @relation("UserFavorites", fields: [tenantId], references: [id], onDelete: Cascade)
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  favoritedAt DateTime @default(now())
+  
+  @@unique([tenantId, propertyId])
+  @@index([tenantId])
+  @@index([favoritedAt])
+}
+
 model Match {
   id           String         @id @default(cuid())
   tenantId     String
@@ -250,9 +535,15 @@ model Match {
 
   matchedAt    DateTime       @default(now())
   status       PropertyStatus @default(ACTIVE)
+  
+  // Lease Progress
   leaseSigned  Boolean        @default(false)
   depositPaid  Boolean        @default(false)
   moveInDate   DateTime?
+
+  // Chat
+  conversationId    String?
+  lastMessageAt     DateTime?
 
   messages     Message[]
 
@@ -261,6 +552,7 @@ model Match {
   @@index([landlordId])
   @@index([propertyId])
   @@index([status])
+  @@index([matchedAt])
 }
 
 // ==========================================
@@ -300,7 +592,7 @@ model Notification {
   type     NotificationType
   title    String
   body     String
-  data     Json?
+  data     Json?            // Additional context (matchId, senderId, etc.)
 
   isRead   Boolean          @default(false)
   readAt   DateTime?
@@ -321,19 +613,30 @@ model VerificationRequest {
   userId             String
   user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  type               VerificationType
   status             VerificationStatus @default(PENDING)
-  submittedAt        DateTime           @default(now())
-  reviewedBy         String?
-  reviewedAt         DateTime?
-  notes              String?
-
+  
+  // Documents
+  documents          String[]           @default([])
   idDocument         String?
   proofOfAddress     String?
   incomeVerification String?
   backgroundCheck    String?
 
+  // Review
+  submittedAt        DateTime           @default(now())
+  reviewedBy         String?            // Officer ID
+  reviewedAt         DateTime?
+  notes              String?
+  rejectionReason    String?
+
+  // Auto-expiry
+  expiresAt          DateTime           @default(dbgenerated("now() + interval '365 days'"))
+
   @@index([userId])
   @@index([status])
+  @@index([type])
+  @@index([expiresAt])
 }
 
 model FraudAlert {
@@ -344,7 +647,10 @@ model FraudAlert {
   type        FraudAlertType
   severity    AlertSeverity
   description String
-  flaggedBy   String?
+  
+  evidence    Json?          // Store detailed evidence
+  
+  flaggedBy   String?        // Officer ID if manual
   resolution  String?
 
   createdAt   DateTime       @default(now())
@@ -353,24 +659,51 @@ model FraudAlert {
   @@index([userId])
   @@index([severity])
   @@index([type])
+  @@index([createdAt])
 }
 
 // ==========================================
-// PAYMENTS & ADMIN
+// PAYMENTS & SUBSCRIPTION
 // ==========================================
+model Subscription {
+  id              String            @id @default(cuid())
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  tier            String            // TENANT_PRO, TENANT_PREMIUM, LANDLORD_PRO
+  status          String            @default("ACTIVE") // ACTIVE, CANCELED, EXPIRED
+  
+  stripeId        String?
+  
+  startDate       DateTime          @default(now())
+  renewalDate     DateTime
+  endDate         DateTime?
+  
+  price           Int               // In cents
+  currency        String            @default("NGN")
+  billingCycle    String            @default("MONTHLY") // MONTHLY, ANNUAL
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([userId])
+  @@index([status])
+}
+
 model Transaction {
   id                  String            @id @default(cuid())
   userId              String
   user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   type                TransactionType
-  amount              Int               // cents
-  currency            String            @default("USD")
+  amount              Int               // In cents
+  currency            String            @default("NGN")
 
   stripePaymentIntentId String?
   stripeChargeId       String?
 
   status              TransactionStatus @default(PENDING)
+  description         String?
   metadata            Json?
 
   createdAt           DateTime          @default(now())
@@ -378,20 +711,52 @@ model Transaction {
   @@index([userId])
   @@index([type])
   @@index([status])
+  @@index([createdAt])
 }
 
+// ==========================================
+// ADMIN & COMPLIANCE
+// ==========================================
 model AdminLog {
   id        String   @id @default(cuid())
   adminId   String
   admin     User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
-  action    String
-  targetId  String?
+  action    String   // user_blocked, verification_approved, etc.
+  targetId  String?  // User/Property/etc. affected
+  targetType String? // User, Property, Subscription
   details   Json?
+  reason    String?
 
   createdAt DateTime @default(now())
 
   @@index([adminId])
   @@index([action])
+  @@index([targetId])
+  @@index([createdAt])
+}
+
+model DisputeReport {
+  id            String   @id @default(cuid())
+  reporterId    String
+  reporter      User     @relation("ReportedBy", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUserId  String
+  targetUser    User     @relation("ReportedAgainst", fields: [targetUserId], references: [id], onDelete: Cascade)
+  
+  type          String   // SCAM, HARASSMENT, INAPPROPRIATE, FRAUD, OTHER
+  description   String
+  evidence      String[] @default([]) // S3 URLs
+  
+  status        String   @default("PENDING") // PENDING, UNDER_REVIEW, RESOLVED, DISMISSED
+  
+  resolvedBy    String?  // Officer ID
+  resolution    String?
+  resolvedAt    DateTime?
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([reporterId])
+  @@index([targetUserId])
+  @@index([status])
   @@index([createdAt])
 }

@@ -1,77 +1,102 @@
-// import type { Request } from 'express';
-// import { verifyToken } from '../lib/jwt.js';
-// import { prisma } from './client.js';
-// // import { redis } from '../lib/redis.js';
+//  import { Request, Response } from 'express';
+// import { verifySupabaseJWT, extractTokenFromHeader } from '../auth/jwt';
+// import { prisma } from '../database/client';
 
-// export async function createContext(opts: {
+// export async function createContext({
+//   req,
+//   res,
+// }: {
 //   req: Request;
-//   res: any;
+//   res: Response;
 // }) {
-//   let userId: string | undefined;
+//   const authHeader = req.headers.authorization;
+//   let user = null;
+//   let token = null;
 
-//   // Try JWT from Authorization header (mobile)
-//   if (opts.req.headers.authorization) {
-//     const authHeader = opts.req.headers.authorization;
-//     if (authHeader.startsWith('Bearer ')) {
-//       const token = authHeader.substring(7);
-//       const decoded = verifyToken(token);
-//       if (decoded) {
-//         userId = decoded.sub;
+//   if (authHeader) {
+//     token = extractTokenFromHeader(authHeader);
+//     if (token) {
+//       const payload = verifySupabaseJWT(token);
+//       if (payload) {
+//         // Get full user object from database
+//         user = await prisma.user.findUnique({
+//           where: { supabaseUserId: payload.sub },
+//         });
 //       }
 //     }
 //   }
 
-//   // Try Clerk JWT (future)
-//   // Could verify Clerk token here
-
 //   return {
-//     userId,
+//     req,
+//     res,
+//     user,
+//     token,
 //     prisma,
-//     // redis,
-//     req: opts.req,
 //   };
 // }
 
 // export type Context = Awaited<ReturnType<typeof createContext>>;
 
+import type { IncomingMessage, ServerResponse } from "http";
+import { prisma } from "./client.js";
+import { verifyToken } from "../lib/jwt.js";
 
-
-
-import { Request, Response } from 'express';
-import { verifySupabaseJWT, extractTokenFromHeader } from '../auth/jwt';
-import { prisma } from '../database/client';
+export interface Context {
+  prisma: typeof prisma;
+  userId?: string;
+  user?: any;
+  token?: string;
+  req?: IncomingMessage;
+  res?: ServerResponse;
+}
 
 export async function createContext({
   req,
   res,
 }: {
-  req: Request;
-  res: Response;
-}) {
-  const authHeader = req.headers.authorization;
-  let user = null;
-  let token = null;
+  req?: IncomingMessage;
+  res?: ServerResponse;
+}): Promise<Context> {
+  const authHeader = req?.headers.authorization;
+  let userId: string | undefined;
+  let user: any;
+  let token: string | undefined;
 
-  if (authHeader) {
-    token = extractTokenFromHeader(authHeader);
-    if (token) {
-      const payload = verifySupabaseJWT(token);
-      if (payload) {
-        // Get full user object from database
-        user = await prisma.user.findUnique({
-          where: { supabaseUserId: payload.sub },
-        });
-      }
+  console.log("[Context] Building context...");
+
+  if (authHeader?.startsWith("Bearer ")) {
+    token = authHeader.slice(7);
+
+    try {
+      const decoded = verifyToken(token);
+      userId = decoded?.sub;
+      // userId = decoded?.userId;
+
+      user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          tenantProfile: true,
+          landlordProfile: true,
+          agentProfile: true,
+          officerProfile: true,
+        },
+      });
+
+      console.log("[Context] ✅ Token verified", { userId });
+    } catch (error) {
+      console.warn(
+        "[Context] ⚠️  Invalid token:",
+        error instanceof Error ? error.message : String(error)
+      );
     }
   }
 
   return {
-    req,
-    res,
+    prisma,
+    userId,
     user,
     token,
-    prisma,
-  };
+    req,
+    res,
+  };  
 }
-
-export type Context = Awaited<ReturnType<typeof createContext>>;

@@ -1,15 +1,15 @@
+//  server/src/index.ts
 import express from "express";
 import cors from "cors";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import dotenv from "dotenv";
-// import { clerkMiddleware } from "@clerk/express";
-import { appRouter } from "./database/routers/index.js";
+import { appRouter } from "./database/routers";
 import { createContext } from "./database/context.js";
 import { healthCheckHandler } from "./routes/health.js";
-// import { clerkClient, requireAuth, getAuth } from "@clerk/express";
-// import { createUserHandler } from "@/routes/auth.ts";
-// import { stripeWebhookHandler } from './webhooks/stripe.js';
-import morgan from 'morgan';
+import morgan from "morgan";
+import { prisma } from "./database/client";
+import { logger } from "./lib/logger";
+
 // Load environment variables
 dotenv.config({ path: ".env.local" });
 
@@ -36,40 +36,75 @@ const allowedOrigins = [
   process.env.WEB_URL,
 ].filter(Boolean); // Remove undefined values
 
-
 // MIDDLEWARES
 // ==========================================
-
+// app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: allowedOrigins,
     credentials: true,
   })
 );
-app.use(morgan('dev'));
+app.use(morgan("dev"));
 // app.use(clerkMiddleware());
 
 app.use(express.json());
 
+// DATABASE CONNECTION CHECK
+// ==========================================
+async function checkDatabaseConnection() {
+  try {
+    logger.info("🔍 Checking database connection...");
+
+    // Test connection
+    await prisma.$queryRaw`SELECT 1`;
+    logger.success("✅ Database connected successfully");
+
+    // Get list of tables
+    const tables = await prisma.$queryRaw`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name;
+    `;
+
+    logger.info("📊 Available database tables:");
+    (tables as Array<{ table_name: string }>).forEach((t) => {
+      logger.info(`   - ${t.table_name}`);
+    });
+
+    return true;
+  } catch (error) {
+    logger.error("❌ Database connection failed:", error);
+    return false;
+  }
+}
+
 // ROUTES
 // ==========================================
 
-// Use requireAuth() to protect this route
-// // If user isn't authenticated, requireAuth() will redirect back to the homepage
-// app.get("/protected", requireAuth(), async (req, res) => {
-//   // Use `getAuth()` to get the user's `userId`
-//   const { userId } = getAuth(req);
-
-//   // Use Clerk's JavaScript Backend SDK to get the user's User object
-//   const user = await clerkClient.users.getUser(userId);
-
-//   return res.json({ user });
-// });
+app.get("/api/db-status", async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({
+      status: "connected",
+      message: "Database is connected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("DB status check failed:", error);
+    res.status(500).json({
+      status: "disconnected",
+      message: "Database connection failed",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
 
 // Health check
 app.get("/api/health", healthCheckHandler);
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 /**
  * POST /api/auth/create-user
@@ -108,11 +143,14 @@ app.use(
   createExpressMiddleware({
     router: appRouter,
     createContext,
-    onError({ error, type, path, input, ctx, req }) {
+    onError({ error, type, path }) {
       console.error(`[tRPC] ${type} on ${path}:`, error);
-
+      logger.error(`❌ tRPC Error at ${path}:`, error.message);
       if (process.env.NODE_ENV === "production") {
         // Send to error tracking (Sentry, DataDog, etc)
+      }
+      if (error.cause) {
+        logger.error("Cause:", error.cause);
       }
     },
   })
@@ -128,6 +166,7 @@ app.use((req, res) => {
     path: req.path,
   });
 });
+// app.use(errorHandler);
 
 // ERROR HANDLER
 // ==========================================
@@ -148,11 +187,43 @@ app.use(
 
 // START SERVER
 // ==========================================
-app.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
-  console.log(
-    `📡 tRPC endpoint: http://localhost:${PORT}/api/trpc or http://localhost:${PORT}/api/trpc-test/`
-  );
-  console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
-});
+// app.listen(PORT, () => {
+//   console.log(`✅ Server running on http://localhost:${PORT}`);
+//   console.log(
+//     `📡 tRPC endpoint: http://localhost:${PORT}/api/trpc or http://localhost:${PORT}/api/trpc-test/`
+//   );
+//   console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
+//   console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
+// });
+
+async function startServer() {
+  try {
+    // Check database first
+    const dbConnected = await checkDatabaseConnection();
+
+    if (!dbConnected) {
+      logger.error("🛑 Server startup aborted: Database not connected");
+      process.exit(1);
+    }
+
+    app.listen(PORT, () => {
+      logger.success(`\n🚀 Server running on http://localhost:${PORT}`);
+      logger.info(`📍 tRPC endpoint: http://localhost:${PORT}/trpc`);
+      logger.info(`❤️  Health check: http://localhost:${PORT}/health`);
+      logger.info(`📊 DB status: http://localhost:${PORT}/api/db-status\n`);
+    });
+
+    // Graceful shutdown
+    process.on("SIGINT", async () => {
+      logger.info("\n🛑 Shutting down gracefully...");
+      await prisma.$disconnect();
+      logger.success("✅ Database disconnected");
+      process.exit(0);
+    });
+  } catch (error) {
+    logger.error("🛑 Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
