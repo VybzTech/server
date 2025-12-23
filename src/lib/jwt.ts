@@ -1,9 +1,9 @@
 // (JWT token handling)
 // ==========================================
 
-import * as jwt from 'jsonwebtoken';
+import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
 
 export function createToken(userId: string): string {
   return jwt.sign(

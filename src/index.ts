@@ -1,66 +1,60 @@
-//  server/src/index.ts
-import express from "express";
+import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
-import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import dotenv from "dotenv";
-import { appRouter } from "./database/routers";
-import { createContext } from "./database/context.js";
-import { healthCheckHandler } from "./routes/health.js";
 import morgan from "morgan";
-import { prisma } from "./database/client";
-import { logger } from "./lib/logger";
+import { prisma } from "./database/client.js";
+import { authRoutes } from "./routes/auth.js";
+import { userRoutes } from "./routes/user.js";
+import { propertyRoutes } from "./routes/properties.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import { authMiddleware } from "./middleware/auth.js";
+import { logger } from "./lib/logger.js";
 
-// Load environment variables
+
 dotenv.config({ path: ".env.local" });
 
-// Add your required vars
-const requiredEnvVars = ["DATABASE_URL", "STRIPE_SECRET_KEY"];
-
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar]) {
-    console.error(`❌ Missing required environment variable: ${envVar}`);
-    process.exit(1);
-  }
-}
-
-const app = express();
+const app: Express = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS - filter out undefined values
-const allowedOrigins = [
-  "http://localhost:3000", // Web
-  "http://localhost:8081", // Expo iOS
-  "http://localhost:19000", // Expo
-  "http://192.168.1.*", // Local network
-  process.env.MOBILE_URL,
-  process.env.WEB_URL,
-].filter(Boolean); // Remove undefined values
-
-// MIDDLEWARES
 // ==========================================
-// app.use(express.urlencoded({ extended: true }));
+// MIDDLEWARE
+// ==========================================
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(morgan("dev"));
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: [
+      "http://localhost:3000",
+      "http://localhost:8081",
+      "http://localhost:19000",
+      process.env.MOBILE_URL,
+      process.env.WEB_URL,
+    ].filter(Boolean),
     credentials: true,
   })
 );
-app.use(morgan("dev"));
-// app.use(clerkMiddleware());
 
-app.use(express.json());
+// ==========================================
+// HEALTH CHECK
+// ==========================================
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+  });
+});
 
+// ==========================================
 // DATABASE CONNECTION CHECK
 // ==========================================
 async function checkDatabaseConnection() {
   try {
     logger.info("🔍 Checking database connection...");
-
-    // Test connection
     await prisma.$queryRaw`SELECT 1`;
     logger.success("✅ Database connected successfully");
 
-    // Get list of tables
     const tables = await prisma.$queryRaw`
       SELECT table_name 
       FROM information_schema.tables 
@@ -80,125 +74,40 @@ async function checkDatabaseConnection() {
   }
 }
 
-// ROUTES
+// ==========================================
+// API ROUTES
 // ==========================================
 
-app.get("/api/db-status", async (req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({
-      status: "connected",
-      message: "Database is connected",
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    logger.error("DB status check failed:", error);
-    res.status(500).json({
-      status: "disconnected",
-      message: "Database connection failed",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
+// Auth routes (no authentication needed)
+app.use("/api/auth", authRoutes);
 
-// Health check
-app.get("/api/health", healthCheckHandler);
-app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-/**
- * POST /api/auth/create-user
- * Called after Clerk signup to create user in database
- *
- * Body:
- * {
- *   clerkId: string,
- *   email: string,
- *   firstName: string,
- *   lastName: string,
- *   roles: string[] // ['TENANT'] or ['LANDLORD']
- * }
- */
-// app.post("/api/auth/create-user", createUserHandler);
+// User routes (protected)
+app.use("/api/users", authMiddleware, userRoutes);
 
-// Add this BEFORE the tRPC middleware
-app.get("/api/trpc-test", async (req, res) => {
-  try {
-    // This simulates a tRPC call
-    const caller = appRouter.createCaller(await createContext({ req, res }));
+// Property routes (protected)
+app.use("/api/properties", authMiddleware, propertyRoutes);
 
-    res.json({
-      success: true,
-      message: "tRPC is working",
-      availableRoutes: Object.keys(appRouter._def.procedures),
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// tRPC routes
-app.use(
-  "/api/trpc",
-  createExpressMiddleware({
-    router: appRouter,
-    createContext,
-    onError({ error, type, path }) {
-      console.error(`[tRPC] ${type} on ${path}:`, error);
-      logger.error(`❌ tRPC Error at ${path}:`, error.message);
-      if (process.env.NODE_ENV === "production") {
-        // Send to error tracking (Sentry, DataDog, etc)
-      }
-      if (error.cause) {
-        logger.error("Cause:", error.cause);
-      }
-    },
-  })
-);
-
-// Webhooks (Express - NOT tRPC)
-// app.post('/api/webhooks/stripe', stripeWebhookHandler);
-
-// 404 handler
-app.use((req, res) => {
+// ==========================================
+// 404 HANDLER
+// ==========================================
+app.use((req: Request, res: Response) => {
   res.status(404).json({
     error: "Not found",
     path: req.path,
+    method: req.method,
   });
 });
-// app.use(errorHandler);
 
+// ==========================================
 // ERROR HANDLER
 // ==========================================
-app.use(
-  (
-    err: any,
-    req: express.Request,
-    res: express.Response,
-    next: express.NextFunction
-  ) => {
-    console.error("Error:", err);
-    res.status(500).json({
-      error: "Internal server error",
-      message: process.env.NODE_ENV === "development" ? err.message : undefined,
-    });
-  }
-);
+app.use(errorHandler);
 
-// START SERVER
 // ==========================================
-// app.listen(PORT, () => {
-//   console.log(`✅ Server running on http://localhost:${PORT}`);
-//   console.log(
-//     `📡 tRPC endpoint: http://localhost:${PORT}/api/trpc or http://localhost:${PORT}/api/trpc-test/`
-//   );
-//   console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
-//   console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
-// });
-
+// SERVER STARTUP
+// ==========================================
 async function startServer() {
   try {
-    // Check database first
     const dbConnected = await checkDatabaseConnection();
 
     if (!dbConnected) {
@@ -208,12 +117,16 @@ async function startServer() {
 
     app.listen(PORT, () => {
       logger.success(`\n🚀 Server running on http://localhost:${PORT}`);
-      logger.info(`📍 tRPC endpoint: http://localhost:${PORT}/trpc`);
-      logger.info(`❤️  Health check: http://localhost:${PORT}/health`);
-      logger.info(`📊 DB status: http://localhost:${PORT}/api/db-status\n`);
+      logger.info(`\n📍 API Routes:`);
+      logger.info(`   POST   /api/auth/signup`);
+      logger.info(`   POST   /api/auth/login`);
+      logger.info(`   POST   /api/auth/complete-onboarding`);
+      logger.info(`   POST   /api/users/profile`);
+      logger.info(`   GET    /api/users/me`);
+      logger.info(`   POST   /api/properties`);
+      logger.info(`   GET    /api/properties\n`);
     });
 
-    // Graceful shutdown
     process.on("SIGINT", async () => {
       logger.info("\n🛑 Shutting down gracefully...");
       await prisma.$disconnect();
